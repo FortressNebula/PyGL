@@ -39,9 +39,9 @@ def orthographic_proj_mat(n, f, l, r, t, b):
 	Inputs are near distance, far distance, left, right, top, bottom
 	"""
 	return np.array([
-		[2 / (r-l), 0, 0, (r+l)/(r-l)],
-		[0, 2 / (b-t), 0, (t+b)/(b-t)],
-		[0, 0, 2 / (n-f), (f+n)/(f-n)],
+		[2 / (r-l), 0, 0, (r+l)/(l-r)],
+		[0, 2 / (b-t), 0, (t+b)/(t-b)],
+		[0, 0, 1 / (n-f),     n/(n-f)],
 		[0, 0, 0, 1]
 	])
 
