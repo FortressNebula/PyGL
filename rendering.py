@@ -166,9 +166,9 @@ class Texture2D:
 		return self.texel_fetch_bilinear(uv)
 
 	def texel_fetch_nearest_neighbour(self, uv):
-		scaled_coords = uv * (self._size - 1)
+		scaled_coords = uv * (self._size)
 		unroundedcoords = np.clip(scaled_coords, (0,0), (self._size[0] - 1, self._size[1] - 1))
-		coords = np.round(unroundedcoords)
+		coords = np.floor(unroundedcoords)
 		return np.array(self._data[int(coords[0]), int(coords[1])]) 
 	
 	def texel_fetch_bilinear(self, uv):
