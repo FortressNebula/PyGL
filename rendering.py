@@ -20,8 +20,8 @@ _current_vert_shader = lambda vertex_data : vertex_data
 
 def bind_vert_shader(shader):
 	"""
-	Shader should take in vertex data and output transformed vertex data
-	This will usually be done with the 'project' method
+	Shader should take in vertex data and output transformed vertex data. First attribute should be inverse w-depth
+	This will usually be done with the 'vertex_coordinate_project' method
 	"""
 	global _current_vert_shader
 	_current_vert_shader = shader
@@ -51,11 +51,12 @@ def project(cartesian_coordinate: np.ndarray, *matrices: np.ndarray):
 	"""
 	Util tool to apply a series of 4x4 projection matrices to a cartesian coordinate
 	First element will be applied first, so input the matrices in reverse order to conventional notation
+	Returns a tuple, the cartesian coordinate and the w-depth
 	"""
 	homogenous_coordinate = as_homogenous(cartesian_coordinate)
 	for mat in matrices:
 		homogenous_coordinate = mat @ homogenous_coordinate
-	return as_cartesian(homogenous_coordinate)
+	return (as_cartesian(homogenous_coordinate), homogenous_coordinate[3])
 
 def transform_vertex_buffer(buffer: Framebuffer, vertex_buf: np.ndarray):
 	"""
@@ -63,17 +64,26 @@ def transform_vertex_buffer(buffer: Framebuffer, vertex_buf: np.ndarray):
 	"""
 	transformed_buffer = np.apply_along_axis(_current_vert_shader, 1, vertex_buf)
 	transformed_buffer = transformed_buffer.transpose()
-	transformed_buffer[0] = (0.5*transformed_buffer[0] + 0.5) * (buffer.width - 1)
-	transformed_buffer[1] = (0.5*transformed_buffer[1] + 0.5) * (buffer.height - 1)
+	transformed_buffer[1] = (0.5*transformed_buffer[1] + 0.5) * (buffer.width - 1)
+	transformed_buffer[2] = (0.5*transformed_buffer[2] + 0.5) * (buffer.height - 1)
 
 	return transformed_buffer.transpose()
 
 # rasterisation
+_use_perspective_correct_interpolation = True
+
+def should_use_perspective_interpolation(value):
+	global _use_perspective_correct_interpolation
+	_use_perspective_correct_interpolation = value
+
+def check_perspective_interpolation(proj_mat:np.ndarray):
+	should_use_perspective_interpolation(not (proj_mat == [0, 0, 0, 1]).all())
+
 def _edge_function(v0, v1, p):
-	return (p[0] - v0[0])*(v1[1] - v0[1]) - (p[1] - v0[1])*(v1[0] - v0[0])
+	return (p[1] - v0[1])*(v1[2] - v0[2]) - (p[2] - v0[2])*(v1[1] - v0[1])
 
 def rasterise_triangle(buffer: Framebuffer, triangle: np.ndarray):
-	global _current_frag_shader
+	global _current_frag_shader, _use_perspective_correct_interpolation
 	"""
 	Takes in BUFFER VIEWPORT coordinates!!
 	"""
@@ -83,14 +93,13 @@ def rasterise_triangle(buffer: Framebuffer, triangle: np.ndarray):
 		return
 	
 	vertex_attributes = triangle.transpose()
-	min_x = vertex_attributes[0].min()
-	max_x = vertex_attributes[0].max()
-	min_y = vertex_attributes[1].min()
-	max_y = vertex_attributes[1].max()
-	min_z = vertex_attributes[2].min()
-	max_z = vertex_attributes[2].max()
-
-	inverse_depths = 1 / vertex_attributes[2]
+	inverse_depths = vertex_attributes[0]
+	min_x = vertex_attributes[1].min()
+	max_x = vertex_attributes[1].max()
+	min_y = vertex_attributes[2].min()
+	max_y = vertex_attributes[2].max()
+	min_z = vertex_attributes[3].min()
+	max_z = vertex_attributes[3].max()
 
 	# off-screen culling
 	if max_x < 0 or min_x > buffer.width: return
@@ -98,38 +107,46 @@ def rasterise_triangle(buffer: Framebuffer, triangle: np.ndarray):
 	if max_z < 0 or min_z > 1: return
 	
 	# clamp values
-	min_x = int(min_x) if int(min_x) > 0 else 0
-	min_y = int(min_y) if int(min_y) > 0 else 0
-	max_x = int(max_x) if int(max_x) <= buffer.width - 1 else buffer.width - 1
-	max_y = int(max_y) if int(max_y) <= buffer.height - 1 else buffer.height - 1
+	min_x = np.floor(min_x) if np.floor(min_x) > 0 else 0
+	min_y = np.floor(min_y) if np.floor(min_y) > 0 else 0
+	max_x = np.ceil(max_x) if np.ceil(max_x) <= buffer.width - 1 else buffer.width - 1
+	max_y = np.ceil(max_y) if np.ceil(max_y) <= buffer.height - 1 else buffer.height - 1
 
-	for x in range(min_x, max_x + 1):
-		for y in range(min_y, max_y + 1):
+	for x in range(int(min_x), int(max_x + 1)):
+		for y in range(int(min_y), int(max_y + 1)):
 			# rasterize pixel
-			w2 = _edge_function(triangle[0], triangle[1], (x, y))
-			w0 = _edge_function(triangle[1], triangle[2], (x, y))
-			w1 = _edge_function(triangle[2], triangle[0], (x, y))
+			w2 = _edge_function(triangle[0], triangle[1], (0, x, y))
+			w0 = _edge_function(triangle[1], triangle[2], (0, x, y))
+			w1 = _edge_function(triangle[2], triangle[0], (0, x, y))
 
-			if w0 < 0 or w1 < 0 or w2 < 0: continue # outside triangle!
+			if w0 < 0 or w1 < 0 or w2 < 0: continue # outside triangle
+			if w0 == 0 and w1 == 0 and w2 == 0: continue	
 			w0 /= area
 			w1 /= area
 			w2 /= area
 			
 			interpolate = lambda attrs: attrs[0] * w0 + attrs[1] * w1 + attrs[2] * w2
+			w_depth = 1 / interpolate(inverse_depths)
+			perspective_interpolate = lambda attrs: w_depth * (attrs[0]*w0*inverse_depths[0] + attrs[1]*w1*inverse_depths[1] + attrs[2]*w2*inverse_depths[2])
+
 			vertex_data = np.zeros(len(vertex_attributes))
 
-			depth = 1 / interpolate(inverse_depths)
+			#if _use_perspective_correct_interpolation: 
+			depth = perspective_interpolate(vertex_attributes[3])
+			#else: depth = interpolate(vertex_attributes[3])
 
 			# depth test!
 			if buffer.depth_data[x, y] < depth: continue
 
-			vertex_data[0] = interpolate(vertex_attributes[0])
 			vertex_data[1] = interpolate(vertex_attributes[1])
-			vertex_data[2] = depth
+			vertex_data[2] = interpolate(vertex_attributes[2])
+			vertex_data[3] = depth
 			
-			perspective_interpolate = lambda attrs: depth * (attrs[0]*w0*inverse_depths[0] + attrs[1]*w1*inverse_depths[1] + attrs[2]*w2*inverse_depths[2])
-			vertex_data[3:] = np.apply_along_axis(perspective_interpolate, 1, vertex_attributes[3:])
+			# if not _use_perspective_correct_interpolation: 
+			# 	perspective_interpolate = interpolate
 
+			vertex_data[4:] = np.apply_along_axis(perspective_interpolate, 1, vertex_attributes[4:])
+		
 			buffer.data[x, y] = _current_frag_shader(vertex_data)
 			buffer.depth_data[x, y] = depth
 
@@ -149,8 +166,10 @@ class Texture2D:
 		return self.texel_fetch_bilinear(uv)
 
 	def texel_fetch_nearest_neighbour(self, uv):
-		coords = np.clip(np.uint32(uv * (self._size - 1)), (0,0), (self._size[0] - 1, self._size[1] - 1))
-		return np.array(self._data[coords[0], coords[1]]) 
+		scaled_coords = uv * (self._size - 1)
+		unroundedcoords = np.clip(scaled_coords, (0,0), (self._size[0] - 1, self._size[1] - 1))
+		coords = np.round(unroundedcoords)
+		return np.array(self._data[int(coords[0]), int(coords[1])]) 
 	
 	def texel_fetch_bilinear(self, uv):
 		coords = np.clip(uv * (self._size-1), (0,0), (self._size[0] - 1, self._size[1] - 1))

@@ -9,12 +9,12 @@ class Framebuffer: # frame buffer with some width and height as well as a format
 		self.data = np.zeros(width*height*format_bytesize, dtype=np.uint8).reshape(width, height, format_bytesize)
 		self.depth_data = np.ones(width*height, dtype=np.float32).reshape(width, height)
 		self.format_bytesize = format_bytesize
-
-	def get_aspect_ratio(self):
-		return self.width / self.height
+		self.aspect_ratio = self.width / self.height
 	
-	def clear(self, clear_data):
+	def clear(self, clear_data, should_flush_depth_data=True):
 		self.data[0:, 0:] = clear_data
+		if should_flush_depth_data:
+			self.depth_data.fill(1)
 
 	def debug_fill(self):
 		for i in range(self.width):
