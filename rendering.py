@@ -151,6 +151,12 @@ def rasterise_triangle(buffer: Framebuffer, triangle: np.ndarray):
 			buffer.depth_data[x, y] = depth
 
 # textures
+_crispy_filtering = -1
+
+def crispy_linear_filtering_setting(value):
+	"""-1 to disable"""
+	global _crispy_filtering
+	_crispy_filtering = value
 
 class Texture2D:
 	def __init__(self, size, data, use_nearest_neighbour):
@@ -172,14 +178,16 @@ class Texture2D:
 		return np.array(self._data[int(coords[0]), int(coords[1])]) 
 	
 	def texel_fetch_bilinear(self, uv):
+		global _crispy_filtering
 		coords = np.clip(uv * (self._size-1), (0,0), (self._size[0] - 1, self._size[1] - 1))
 		x0, y0 = np.floor(coords)
 		x1, y1 = np.ceil(coords)
 
 		t = coords - np.floor(coords)
-		crispiness = 2 # integer
-		k = 1 / (2*crispiness + 1)
-		xweight, yweight = 0.5 + 0.5 * np.real(np.pow(2*t - 1,k, dtype=complex))
+		if _crispy_filtering != -1:
+			k = 1 / (2*_crispy_filtering + 1)
+			t = 0.5 + 0.5 * np.real(np.pow(2*t - 1,k, dtype=complex))
+		xweight, yweight = t
 
 		col00 = np.array(self._data[x0, y0])
 		col01 = np.array(self._data[x0, y1])
