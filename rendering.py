@@ -160,26 +160,58 @@ def crispy_linear_filtering_setting(value):
 
 class Texture2D:
 	def __init__(self, size, data, use_nearest_neighbour):
-		self._size = np.array(size)
-		self._data = data
+		self._size = np.array(size, dtype=np.uint16)
+		self._mipmaps = [data]
 		self._texel_size = np.array((1 / size[0], 1 / size[1]))
 		self._use_nearest_neighbour = use_nearest_neighbour
+		self._using_mipmaps = False
 	
+	def force_disable_mipmaps(self):
+		self._using_mipmaps = False
+	def force_enable_mipmaps(self):
+		self._using_mipmaps = True
+
+	def gen_mipmaps(self, num_levels):
+		# check size constraints
+		if (self._size & (self._size - 1) != 0).any():
+			return False # size not power of two
+		min_size = 2**(num_levels-1)
+		if (self._size < min_size).any():
+			return False # texture not big enough
+
+		self._using_mipmaps = True
+
+		for level in range(num_levels):
+			if level == 0: continue # already exists
+
+			size = np.int16(self._size / 2**level)
+			offset = 0.5 / size
+			mipmap_data = np.zeros(size[0]*size[1]*4).reshape(*size, 4)
+			for y in range(size[1]):
+				for x in range(size[0]):
+					uv = np.array([x, y]) / size + offset
+					mipmap_data[x, y] = self.bilinear(uv, self._mipmaps[0], self._size)
+			
+			self._mipmaps.append(mipmap_data)
+			
 	def get_size(self): return self._size
 	
-	def texel_fetch(self, uv):
-		if self._use_nearest_neighbour: return self.texel_fetch_nearest_neighbour(uv)
-		return self.texel_fetch_bilinear(uv)
+	def texel_fetch(self, uv, mipmap_level=0):
+		size = self._size if mipmap_level == 0 else self._size / 2**mipmap_level
+		if not self._using_mipmaps:
+			# no mipmaps means by default use the first-level
+			if self._use_nearest_neighbour: return self.nearest_neighbour(uv, self._mipmaps[mipmap_level], size)
+			return self.bilinear(uv, self._mipmaps[mipmap_level], size)
 
-	def texel_fetch_nearest_neighbour(self, uv):
-		scaled_coords = uv * (self._size)
-		unroundedcoords = np.clip(scaled_coords, (0,0), (self._size[0] - 1, self._size[1] - 1))
+	def nearest_neighbour(self, uv, data, size):
+		scaled_coords = uv * size
+		unroundedcoords = np.clip(scaled_coords, (0,0), (size[0] - 1, size[1] - 1))
 		coords = np.floor(unroundedcoords)
-		return np.array(self._data[int(coords[0]), int(coords[1])]) 
+		return np.array(data[int(coords[0]), int(coords[1])]) 
 	
-	def texel_fetch_bilinear(self, uv):
+	def bilinear(self, uv, data, size):
 		global _crispy_filtering
-		coords = np.clip(uv * (self._size-1), (0,0), (self._size[0] - 1, self._size[1] - 1))
+		coords = np.clip(uv * size - 0.5, (0,0), (size[0] - 1, size[1] - 1))
 		x0, y0 = np.floor(coords)
 		x1, y1 = np.ceil(coords)
 
@@ -189,10 +221,10 @@ class Texture2D:
 			t = 0.5 + 0.5 * np.real(np.pow(2*t - 1,k, dtype=complex))
 		xweight, yweight = t
 
-		col00 = np.array(self._data[x0, y0])
-		col01 = np.array(self._data[x0, y1])
-		col10 = np.array(self._data[x1, y0])
-		col11 = np.array(self._data[x1, y1])
+		col00 = np.array(data[int(x0), int(y0)])
+		col01 = np.array(data[int(x0), int(y1)])
+		col10 = np.array(data[int(x1), int(y0)])
+		col11 = np.array(data[int(x1), int(y1)])
 
 		lerp = lambda a,b,t : a*(1-t) + b*t
 

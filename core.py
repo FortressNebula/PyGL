@@ -46,7 +46,7 @@ def texture_unload(handle):
 	# not sure why youd do this 
 	del _texture_manager[handle]
 
-def texture_get(handle):
+def texture_get(handle) -> Texture2D:
 	global _texture_manager
 	if handle not in _texture_manager: raise ValueError("Tried accessing unloaded / nonexistent texture!")
 
