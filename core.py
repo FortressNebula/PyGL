@@ -74,14 +74,14 @@ def read_projection_matrix_uniform():
 	return read_uniform("projection_matrix")
 
 def default_rgb_fragment_shader():
-	return lambda vertex_data: np.byte(vertex_data[4:7])
+	return lambda pixel_data: np.byte(pixel_data["vertex_data"][0:3])
 
 def default_depth_fragment_shader():
-	return lambda vertex_data: 255*np.array([vertex_data[2], vertex_data[2], vertex_data[2]])
+	return lambda p: 255*np.array([p["w_depth"], p["w_depth"], p["w_depth"]])
 
 def default_texture_fragment_shader():
 	""" Use the default texture uniform writing method for this"""
-	return lambda vertex_data: read_texture_uniform().texel_fetch(vertex_data[4:6])[0:3]
+	return lambda p: read_texture_uniform().texel_fetch(p["vertex_data"][0:2])[0:3]
 
 def default_vertex_shader():
 	""" Use the default projection matrix uniform writing method for this"""

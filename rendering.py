@@ -127,27 +127,21 @@ def rasterise_triangle(buffer: Framebuffer, triangle: np.ndarray):
 			
 			interpolate = lambda attrs: attrs[0] * w0 + attrs[1] * w1 + attrs[2] * w2
 			w_depth = 1 / interpolate(inverse_depths)
+
 			perspective_interpolate = lambda attrs: w_depth * (attrs[0]*w0*inverse_depths[0] + attrs[1]*w1*inverse_depths[1] + attrs[2]*w2*inverse_depths[2])
-
-			vertex_data = np.zeros(len(vertex_attributes))
-
-			#if _use_perspective_correct_interpolation: 
 			depth = perspective_interpolate(vertex_attributes[3])
-			#else: depth = interpolate(vertex_attributes[3])
+
+			pixel_data = {}
 
 			# depth test!
 			if buffer.depth_data[x, y] < depth: continue
 
-			vertex_data[1] = interpolate(vertex_attributes[1])
-			vertex_data[2] = interpolate(vertex_attributes[2])
-			vertex_data[3] = depth
-			
-			# if not _use_perspective_correct_interpolation: 
-			# 	perspective_interpolate = interpolate
-
-			vertex_data[4:] = np.apply_along_axis(perspective_interpolate, 1, vertex_attributes[4:])
+			pixel_data["viewport_coords"] = np.array([interpolate(vertex_attributes[1]), interpolate(vertex_attributes[2])])
+			pixel_data["z_depth"] = depth
+			pixel_data["w_depth"] = w_depth
+			pixel_data["vertex_data"] = np.apply_along_axis(perspective_interpolate, 1, vertex_attributes[4:])
 		
-			buffer.data[x, y] = _current_frag_shader(vertex_data)
+			buffer.data[x, y] = _current_frag_shader(pixel_data)
 			buffer.depth_data[x, y] = depth
 
 # textures
