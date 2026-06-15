@@ -77,7 +77,7 @@ def default_rgb_fragment_shader():
 	return lambda pixel_data: np.byte(pixel_data["vertex_data"][0:3])
 
 def default_depth_fragment_shader():
-	return lambda p: 255*np.array([p["w_depth"], p["w_depth"], p["w_depth"]])
+	return lambda p: 255*np.array([p["z_depth"], p["z_depth"], p["z_depth"]])
 
 def default_texture_fragment_shader():
 	""" Use the default texture uniform writing method for this"""
