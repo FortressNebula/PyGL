@@ -64,14 +64,20 @@ def bind_texture_uniform(handle):
 def read_texture_uniform() -> Texture2D:
 	return read_uniform("texture")
 
-def bind_projection_matrix_uniform(matrix, check_interpolation=True):
-	"""Binds the projection matrix to a default uniform name. By default also checks if the renderer should use perspective-correct interpolation 
-	(but this can be disabled)"""
+def bind_projection_matrix_uniform(matrix):
+	"""Binds the projection matrix to a default uniform name."""
 	bind_uniform("projection_matrix", matrix)
-	if check_interpolation: check_perspective_interpolation(matrix)
 
 def read_projection_matrix_uniform():
 	return read_uniform("projection_matrix")
+
+def _bind_mipmap_level(uv_flux):
+	# bind the mipmap 
+	# TEXTURE MUST BE BOUND AT THE TEXTURE UNIFORM COORDINATE!!
+	bind_uniform("mipmap_level", read_texture_uniform().uv_flux_to_mipmap_level(uv_flux))
+
+def read_mipmap_level():
+	return read_uniform("mipmap_level")
 
 def default_rgb_fragment_shader():
 	return lambda pixel_data: np.byte(pixel_data["vertex_data"][0:3])
@@ -109,20 +115,40 @@ def draw_triangle_fan(buffer: Framebuffer, vertex_buf:np.ndarray):
 	for i in range(2, len(transformed_buf)):
 		rasterise_triangle(buffer, np.array([transformed_buf[0], transformed_buf[i - 1], transformed_buf[i]]))
 
-def draw_elements(buffer: Framebuffer, vertex_buf:np.ndarray, element_buf:np.ndarray):
+def draw_elements(buffer: Framebuffer, vertex_buf:np.ndarray, element_buf:np.ndarray, consistent_mipmap):
 	if len(vertex_buf) < 3:
 		raise ValueError("Insufficient vertices to form any triangle!")
 	if len(element_buf) == 0:
 		return # TODO: ADD LOGGING
 
 	transformed_buf = transform_vertex_buffer(buffer, vertex_buf)
-
+	triangles = []
+	
+	# compute all triangles
 	for i, element in enumerate(element_buf):
 		if len(element) < 3:
 			raise ValueError(f"Insufficient vertices to form a triangle [Element {i}]")
-		rasterise_triangle(buffer, np.array(transformed_buf[element]))
+		triangles.append(np.array(transformed_buf[element]))
 
-def draw_compound_elements(buffer: Framebuffer, vertex_buf:np.ndarray, attribute_buf:np.ndarray, element_buf:np.ndarray, attribute_element_buf:np.ndarray):
+	uv_flux = 0
+
+	if consistent_mipmap and is_mipmaps_enabled():
+		# all triangles need to have the same mipmap level
+		# average UV flux
+		uv_flux = 0
+		for triangle in triangles:
+			uv_flux += get_uv_flux(triangle)
+		uv_flux /= len(triangles)
+		_bind_mipmap_level(uv_flux) 
+
+	for triangle in triangles:
+		# rasterize
+		if not consistent_mipmap and is_mipmaps_enabled(): 
+			uv_flux = get_uv_flux(triangle)
+			_bind_mipmap_level(uv_flux) 
+		rasterise_triangle(buffer, triangle)
+
+def draw_compound_elements(buffer: Framebuffer, vertex_buf:np.ndarray, attribute_buf:np.ndarray, element_buf:np.ndarray, attribute_element_buf:np.ndarray, consistent_mipmap):
 	if len(vertex_buf) < 3:
 		raise ValueError("Insufficient vertices to form any triangle!")
 	if len(element_buf) == 0:
@@ -131,40 +157,60 @@ def draw_compound_elements(buffer: Framebuffer, vertex_buf:np.ndarray, attribute
 		return
 
 	transformed_buf = transform_vertex_buffer(buffer, vertex_buf)
+	triangles = []
 	
+	# compute all triangles
 	for i, element in enumerate(element_buf):
 		if len(element) < 3:
 			raise ValueError(f"Insufficient vertices to form a triangle [Element {i}]")
 		v = transformed_buf[element]
 		a = attribute_buf[attribute_element_buf[i]]
-		rasterise_triangle(buffer, np.array([
+		triangles.append(np.array([
 			np.append(v[0], a[0]),
 			np.append(v[1], a[1]),
 			np.append(v[2], a[2])
 		]))
 
+	uv_flux = 0
+
+	if consistent_mipmap and is_mipmaps_enabled():
+		# all triangles need to have the same mipmap level
+		# average UV flux
+		uv_flux = 0
+		for triangle in triangles:
+			uv_flux += get_uv_flux(triangle)
+		uv_flux /= len(triangles)
+		_bind_mipmap_level(uv_flux) 
+
+	for triangle in triangles:
+		# rasterize
+		if not consistent_mipmap and is_mipmaps_enabled(): 
+			uv_flux = get_uv_flux(triangle)
+			_bind_mipmap_level(uv_flux) 
+		rasterise_triangle(buffer, triangle)
+
 def draw_model_part(buffer: Framebuffer, model: Model, part_name):
 	model._before_drawing_anything()
 	element_buf, callback = model._parts[part_name]
 	callback()
-	draw_elements(buffer, model._vertices, element_buf)
+	draw_elements(buffer, model._vertices, element_buf, model._force_same_mipmap_level_on_part)
 
 def draw_model_compound_part(buffer: Framebuffer, model: CompoundModel, part_name):
 	model._before_drawing_anything()
 	element_buf, attribute_element_buf, callback = model._compound_parts[part_name]
 	callback()
-	draw_compound_elements(buffer, model._vertices, model._attributes, element_buf, attribute_element_buf)
+	draw_compound_elements(buffer, model._vertices, model._attributes, element_buf, attribute_element_buf, model._force_same_mipmap_level_on_part)
 
 def draw_model(buffer: Framebuffer, model: Model):
 	model._before_drawing_anything()
 
 	for element_buf, callback in model._parts.values():
 		callback()
-		draw_elements(buffer, model._vertices, element_buf)
+		draw_elements(buffer, model._vertices, element_buf, model._force_same_mipmap_level_on_part)
 
 def draw_compound_model(buffer: Framebuffer, model: CompoundModel):
 	draw_model(buffer, model)
 
 	for element_buf, att_buf, callback in model._compound_parts.values():
 		callback()
-		draw_compound_elements(buffer, model._vertices, model._attributes, element_buf, att_buf)
+		draw_compound_elements(buffer, model._vertices, model._attributes, element_buf, att_buf, model._force_same_mipmap_level_on_part)

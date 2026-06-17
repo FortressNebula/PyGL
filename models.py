@@ -9,6 +9,13 @@ class Model:
 		self._vertices = vertices
 		self._parts = {} # dictionary of list of elements and callbacks before drawing them
 		self._before_drawing_anything = lambda: None
+		self._force_same_mipmap_level_on_part = False
+	
+	def force_consistent_part_mipmap_level(self):
+		"""
+		All triangles in a given part will use the same mipmap level. This is determined from the average UV flux across all of them.
+		"""
+		self._force_same_mipmap_level_on_part = True
 
 	def add_part(self, part_name, list_of_elements, pre_draw_callback=lambda: None):
 		"""
@@ -132,3 +139,5 @@ class TextureCube(CompoundModel):
 			[0, 1, 4],
 			[1, 5, 4]
 		], attbuf)
+
+		self.force_consistent_part_mipmap_level()

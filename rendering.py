@@ -5,6 +5,7 @@ from pygl.buffers import Framebuffer
 # NDC = -1 to 1
 # VIEWPORT = 0 to VIEWPORT SIZE
 
+# shaders
 _current_frag_shader = lambda vertex_data : np.zeros(3, dtype=np.uint8)
 
 def bind_frag_shader(shader):
@@ -26,6 +27,7 @@ def bind_vert_shader(shader):
 	global _current_vert_shader
 	_current_vert_shader = shader
 
+# uniforms
 _uniforms = {}
 
 def bind_uniform(uniform_name, value):
@@ -39,6 +41,30 @@ def clear_uniforms():
 def read_uniform(uniform_name):
 	global _uniforms
 	return _uniforms[uniform_name]
+
+# mipmapping
+_uv_vertex_locations = np.zeros(2)
+_use_mipmaps = False
+
+def use_mipmaps(u_location=3, v_location=4):
+	global _uv_vertex_locations, _use_mipmaps
+	"""
+	Enable texture mipmapping. Specify location of U and V coordinates in the vertex attribute.
+	Default is for XYZUV vertex format, where U and V are at locations 3 and 4 respectively.
+	"""
+	_use_mipmaps = True
+	_uv_vertex_locations[0] = u_location
+	_uv_vertex_locations[1] = v_location
+
+def disable_mipmaps():
+	global _use_mipmaps
+	"""
+	Stop using mipmaps.
+	"""
+	_use_mipmaps = False
+
+def is_mipmaps_enabled():
+	return _use_mipmaps
 
 # geometry
 def as_homogenous(cartesian_coordinate):
@@ -70,20 +96,39 @@ def transform_vertex_buffer(buffer: Framebuffer, vertex_buf: np.ndarray):
 	return transformed_buffer.transpose()
 
 # rasterisation
-_use_perspective_correct_interpolation = True
-
-def should_use_perspective_interpolation(value):
-	global _use_perspective_correct_interpolation
-	_use_perspective_correct_interpolation = value
-
-def check_perspective_interpolation(proj_mat:np.ndarray):
-	should_use_perspective_interpolation(not (proj_mat == [0, 0, 0, 1]).all())
 
 def _edge_function(v0, v1, p):
 	return (p[1] - v0[1])*(v1[2] - v0[2]) - (p[2] - v0[2])*(v1[1] - v0[1])
 
+def get_uv_flux(triangle: np.ndarray):
+	"""UV flux across a triangle using the texture coordinate locations specified when mipmaps were enabled.
+	If mipmaps were not enabled or proper UV attribute locations were not specified then this method will
+	return garbage."""
+	global _uv_vertex_locations
+	vertex_attributes = triangle.transpose()
+	u_loc, v_loc = _uv_vertex_locations + 1
+
+	def sqr_attribute_pair_distance(from_vertex_id, to_vertex_id, attribute_a, attribute_b):
+		delta_a = vertex_attributes[attribute_a][to_vertex_id] - vertex_attributes[attribute_a][from_vertex_id]
+		delta_b = vertex_attributes[attribute_b][to_vertex_id] - vertex_attributes[attribute_b][from_vertex_id]
+		return delta_a*delta_a + delta_b*delta_b
+
+	def gradient_function(from_vertex_id, to_vertex_id, att):
+		d_tex = vertex_attributes[att][to_vertex_id] - vertex_attributes[att][from_vertex_id]
+		sqr_dX = sqr_attribute_pair_distance(from_vertex_id, to_vertex_id, 1, 2)
+		x = triangle[to_vertex_id][1:3] - triangle[from_vertex_id][1:3]
+		return x * d_tex / sqr_dX
+
+	def dist(vec):
+		return np.sqrt(vec[0]*vec[0] + vec[1]*vec[1])
+
+	u_flux = gradient_function(0, 1, int(u_loc)) + gradient_function(1, 2, int(u_loc)) + gradient_function(2, 0, int(u_loc))
+	v_flux = gradient_function(0, 1, int(v_loc)) + gradient_function(1, 2, int(v_loc)) + gradient_function(2, 0, int(v_loc))
+	
+	return dist(u_flux) + dist(v_flux)
+
 def rasterise_triangle(buffer: Framebuffer, triangle: np.ndarray):
-	global _current_frag_shader, _use_perspective_correct_interpolation
+	global _current_frag_shader
 	"""
 	Takes in BUFFER VIEWPORT coordinates!!
 	"""
@@ -158,12 +203,10 @@ class Texture2D:
 		self._mipmaps = [data]
 		self._texel_size = np.array((1 / size[0], 1 / size[1]))
 		self._use_nearest_neighbour = use_nearest_neighbour
-		self._using_mipmaps = False
+		self._interpolate_mipmaps = True
 	
-	def force_disable_mipmaps(self):
-		self._using_mipmaps = False
-	def force_enable_mipmaps(self):
-		self._using_mipmaps = True
+	def should_interpolate_mipmaps(self, value):
+		self._interpolate_mipmaps = value
 
 	def gen_mipmaps(self, num_levels):
 		# check size constraints
@@ -172,8 +215,6 @@ class Texture2D:
 		min_size = 2**(num_levels-1)
 		if (self._size < min_size).any():
 			return False # texture not big enough
-
-		self._using_mipmaps = True
 
 		for level in range(num_levels):
 			if level == 0: continue # already exists
@@ -187,15 +228,45 @@ class Texture2D:
 					mipmap_data[x, y] = self.bilinear(uv, self._mipmaps[0], self._size)
 			
 			self._mipmaps.append(mipmap_data)
-			
+	
+	def uv_flux_to_mipmap_level(self, uv_flux):
+		phase_shift = 3.5
+		mipmap_level = np.floor(np.exp(uv_flux * phase_shift) - 1)
+		return np.clip(mipmap_level, 0, self.get_mipmap_levels() - 1)
+
+	def get_mipmap_levels(self):
+		return len(self._mipmaps)
+
 	def get_size(self): return self._size
 	
-	def texel_fetch(self, uv, mipmap_level=0):
-		size = self._size if mipmap_level == 0 else self._size / 2**mipmap_level
-		if not self._using_mipmaps:
-			# no mipmaps means by default use the first-level
-			if self._use_nearest_neighbour: return self.nearest_neighbour(uv, self._mipmaps[mipmap_level], size)
-			return self.bilinear(uv, self._mipmaps[mipmap_level], size)
+	def texel_fetch(self, uv, in_mipmap_level=0):
+		"""
+		Fetch a texel from the texture at the given UV coordinates at the specified mipmap level. Mipmap level can be a decimal,
+		and if mipmap interpolation is enabled then both mipmaps will be sampled. Else, the mipmap level is floored.
+		"""
+
+		top_level = np.ceil(in_mipmap_level)
+		bottom_level = np.floor(in_mipmap_level)
+		
+		if not self._interpolate_mipmaps or top_level == bottom_level:
+			mipmap_level = int(np.floor(in_mipmap_level))
+
+			size = self._size if mipmap_level == 0 else self._size / 2**mipmap_level
+			return self._texel_fetch_internal(uv, self._mipmaps[mipmap_level], size)
+
+		# interpolate!
+		lerp = lambda a,b,t : a*(1-t) + b*t
+		
+		col0 = self._texel_fetch_internal(uv, self._mipmaps[bottom_level], self._size / 2**bottom_level)
+		col1 = self._texel_fetch_internal(uv, self._mipmaps[top_level], self._size / 2**top_level)
+
+		return lerp(col0, col1, in_mipmap_level - bottom_level)
+		
+
+	def _texel_fetch_internal(self, uv, data, size):
+		if self._use_nearest_neighbour: 
+			return self.nearest_neighbour(uv, data, size)
+		return self.bilinear(uv, data, size)
 
 	def nearest_neighbour(self, uv, data, size):
 		scaled_coords = uv * size
